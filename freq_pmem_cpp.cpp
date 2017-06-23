@@ -23,43 +23,38 @@
 #include <libpmemobj++/mutex.hpp>
 #include <libpmemobj++/shared_mutex.hpp>
 
-#define LAYOUT "freq"
-#define NBUCKETS 10007
+namespace {
 
-using nvml::obj::p;
-using nvml::obj::persistent_ptr;
-using nvml::obj::pool;
-using nvml::obj::pool_base;
-using nvml::obj::make_persistent;
-using nvml::obj::delete_persistent;
-using nvml::obj::transaction;
-using nvml::obj::mutex;
-using nvml::obj::shared_mutex;
+const char *LAYOUT = "freq";
+const int NBUCKETS = 10007;
+
+namespace nvobj = nvml::obj;
 
 /* entries in a bucket are a linked list of struct entry */
 struct entry {
 
-	// XXX do we care about the type number for the strdup?
 	entry(int ct, const char *wrd,
-			const persistent_ptr<struct entry> &nxt) : next{nxt},
-					word{pmemobj_tx_strdup(wrd,
-					nvml::detail::type_num<char>())},
-					count{ct}
-	{}
+	                const nvobj::persistent_ptr<struct entry> &nxt) :
+			next{nxt}, word{pmemobj_tx_strdup(wrd,
+			                nvml::detail::type_num<char>())},
+			                count {ct}
+	{
+	}
 
-	persistent_ptr<struct entry> next;
-	persistent_ptr<char> word;
-	mutex mutex;		/* protects count field */
-	p<int> count;
+	nvobj::persistent_ptr<struct entry> next;
+	nvobj::persistent_ptr<char> word;
+	nvobj::mutex mutex; /* protects count field */
+	nvobj::p<int> count;
 };
 
 /* each bucket contains a pointer to the linked list of entries */
 struct bucket {
-	shared_mutex rwlock;		/* protects entries field */
-	persistent_ptr<struct entry> entries;
+	nvobj::shared_mutex rwlock; /* protects entries field */
+	nvobj::persistent_ptr<struct entry> entries;
 };
 
-using buckets = persistent_ptr<bucket[NBUCKETS]>;
+using buckets = bucket[NBUCKETS];
+using pbuckets = nvobj::persistent_ptr<buckets>;
 
 class freq {
 	/* hash a string into an index into h[] */
@@ -97,7 +92,7 @@ class freq {
 				rwlock.unlock_shared();
 
 				/* lock and update transactionally */
-				transaction::exec_tx(pop, [&ep]() {
+				nvobj::transaction::exec_tx(pop, [&ep]() {
 					++ep->count;
 				}, ep->mutex);
 				return;
@@ -107,18 +102,19 @@ class freq {
 		rwlock.unlock_shared();
 
 		/* allocate new entry in table */
-		transaction::exec_tx(pop, [&ep, &word, this, &h]() {
-			ep = make_persistent<entry>(1, word, ht[h].entries);
+		nvobj::transaction::exec_tx(pop,
+		                [&ep, &word, this, &h]() {
+			                ep = nvobj::make_persistent<entry>(1, word, ht[h].entries);
 
 			/* add it to the front of the linked list */
 			ht[h].entries = ep;
 		}, rwlock);
 	}
 
-
-
 public:
-	freq(buckets bht, pool_base &pool) : ht{bht}, pop{pool} {
+	freq(pbuckets bht, nvobj::pool_base &pool) :
+			ht{bht}, pop{pool}
+	{
 	}
 
 	/* break a test file into words and call count() on each one */
@@ -167,15 +163,17 @@ public:
 
 private:
 	/* pointer to the buckets */
-	buckets ht;
-	pool_base &pop;
+	pbuckets ht;
+	nvobj::pool_base &pop;
 	static const int MAXWORD = 8192;
 };
 
 struct root {
-	buckets ht;	/* word frequencies */
+	pbuckets ht; /* word frequencies */
 	/* ... other things we store in this pool go here... */
 };
+
+} /* namespace */
 
 int main(int argc, char *argv[])
 {
@@ -187,13 +185,13 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	auto pop = pool<root>::open(argv[1], LAYOUT);
+	auto pop = nvobj::pool<root>::open(argv[1], LAYOUT);
 	auto q = pop.get_root();
 
 	/* before starting, see if buckets have been allocated */
 	if (q->ht == nullptr) {
-		transaction::exec_tx(pop, [&q]() {
-			q->ht = make_persistent<bucket[NBUCKETS]>();
+		nvobj::transaction::exec_tx(pop, [&q]() {
+			q->ht = nvobj::make_persistent<buckets>();
 		});
 	}
 
